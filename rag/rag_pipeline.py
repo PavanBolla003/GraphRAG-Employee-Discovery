@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import re
+from typing import Optional, List, Dict, Any, Callable
 
 # Add root folder to sys.path to allow importing graph_queries and embeddings
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -9,14 +10,147 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from graph_queries import HugeGraphQueries
 from embeddings.vector_store import VectorStore
 
+from hugegraph_llm.llms.base import BaseLLM
+from google import genai
+
+# Custom LLM Wrapper for Google Gemini to integrate with hugegraph-llm
+class GeminiLLM(BaseLLM):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-flash"):
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
+        self.model_name = model_name
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY is not set.")
+        self.client = genai.Client(api_key=self.api_key)
+
+    def generate(self, messages: Optional[List[Dict[str, Any]]] = None, prompt: Optional[str] = None) -> str:
+        if messages is None:
+            assert prompt is not None, "Prompt or messages must be provided."
+            contents = prompt
+        else:
+            # Format messages as single prompt string
+            parts = []
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                parts.append(f"{role.capitalize()}: {content}")
+            contents = "\n".join(parts)
+            
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=contents
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"[-] Gemini generation error: {e}")
+            return f"Error: {e}"
+
+    def generate_streaming(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        prompt: Optional[str] = None,
+        on_token_callback: Callable = None,
+    ) -> str:
+        res = self.generate(messages, prompt)
+        if on_token_callback:
+            on_token_callback({"choices": [{"delta": {"content": res}}]})
+        return res
+
+    def num_tokens_from_string(self, string: str) -> int:
+        return len(string.split())
+
+    def max_allowed_token_length(self) -> int:
+        return 1000000
+
+    def get_llm_type(self) -> str:
+        return "gemini"
+
+
+# Local Regex-based Fallback LLM Wrapper to allow offline operations
+class FallbackLLM(BaseLLM):
+    def __init__(self, skills_list: List[str], domains_list: List[str], certs_list: List[str]):
+        self.skills_list = skills_list
+        self.domains_list = domains_list
+        self.certs_list = certs_list
+
+    def generate(self, messages: Optional[List[Dict[str, Any]]] = None, prompt: Optional[str] = None) -> str:
+        text = prompt or ""
+        if messages:
+            text += "\n" + "\n".join(m.get("content", "") for m in messages)
+            
+        text_lower = text.lower()
+        
+        # 1. Keyword extraction prompt
+        if "extract" in text_lower and "keywords from the text" in text_lower:
+            extracted = []
+            
+            # Match skills
+            for skill in self.skills_list:
+                pattern = rf"\b{re.escape(skill.lower())}\b"
+                if skill.lower() in text_lower or re.search(pattern, text_lower):
+                    if skill not in extracted:
+                        extracted.append(skill)
+                        
+            # Match domains
+            for domain in self.domains_list:
+                if domain.lower() in text_lower:
+                    if domain not in extracted:
+                        extracted.append(domain)
+                        
+            # Match certifications
+            for cert in self.certs_list:
+                if cert.lower() in text_lower:
+                    if cert not in extracted:
+                        extracted.append(cert)
+                        
+            # Match status keywords
+            bench_keywords = ["bench", "available", "immediately", "free", "idle"]
+            if any(kw in text_lower for kw in bench_keywords):
+                extracted.append("BENCH")
+                
+            return f"KEYWORDS: {', '.join(extracted)}"
+            
+        # 2. Synonym expansion prompt
+        elif "expand synonyms" in text_lower or "synonyms:" in text_lower:
+            return "SYNONYMS: "
+            
+        # 3. Answer synthesis prompt
+        else:
+            return (
+                "### 🕸️ GraphRAG Recommendations (Local Fallback Summary)\n\n"
+                "The system is currently running in **Offline Fallback Mode** (no LLM key provided).\n\n"
+                "Here are the top candidates matched by search parameters and traversed subgraph paths:\n\n"
+                f"{text}\n"
+            )
+
+    def generate_streaming(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        prompt: Optional[str] = None,
+        on_token_callback: Callable = None,
+    ) -> str:
+        res = self.generate(messages, prompt)
+        if on_token_callback:
+            on_token_callback({"choices": [{"delta": {"content": res}}]})
+        return res
+
+    def num_tokens_from_string(self, string: str) -> int:
+        return len(string.split())
+
+    def max_allowed_token_length(self) -> int:
+        return 1000000
+
+    def get_llm_type(self) -> str:
+        return "fallback"
+
+
 class GraphRAGPipeline:
-    def __init__(self, host="127.0.0.1", port="8080", graph="hugegraph"):
+    def __init__(self, host="127.0.0.1", port="8081", graph="hugegraph"):
         self.queries = HugeGraphQueries(host, port, graph)
         self.vector_store = VectorStore()
-        # Attempt to load the FAISS vector store
         self.vector_store.load()
         
-        # Define search vocabularies for regex fallback
+        # Define search vocabularies
         self.skills_list = [
             "Python", "Java", "React", "NodeJS", "AWS", "Azure", 
             "Machine Learning", "Deep Learning", "SQL", "Power BI", 
@@ -32,57 +166,41 @@ class GraphRAGPipeline:
             "Google Cloud Engineer", "Snowflake Associate"
         ]
 
-    def _get_llm_client(self, api_key=None):
-        """Initializes and returns the Google GenAI client if API key is provided."""
+    def _get_llm_client(self, api_key=None) -> BaseLLM:
+        """Initializes and returns the appropriate LLM client (Gemini or Fallback)."""
         if not api_key:
             api_key = os.environ.get("GEMINI_API_KEY")
             
-        if not api_key:
-            return None
-            
-        try:
-            from google import genai
-            client = genai.Client(api_key=api_key)
-            return client
-        except Exception as e:
-            print(f"[-] Failed to initialize Gemini Client: {e}")
-            return None
+        if api_key and api_key != "dummy_key" and len(api_key.strip()) > 5:
+            try:
+                return GeminiLLM(api_key=api_key)
+            except Exception as e:
+                print(f"[-] Failed to initialize GeminiLLM: {e}. Falling back...")
+                
+        return FallbackLLM(self.skills_list, self.domains_list, self.certs_list)
 
-    def extract_intent_fallback(self, query_text):
-        """
-        Regex-based fallback parser to extract skills, domains, status, and certs 
-        from the query when LLM is unavailable.
-        """
+    def extract_intent_from_keywords(self, keywords: List[str]) -> Dict[str, Any]:
+        """Maps extracted keywords to structured search intent parameters."""
         extracted_skills = []
         extracted_domain = None
         extracted_certs = []
         extracted_status = None
         
-        query_lower = query_text.lower()
+        keywords_lower = [k.lower() for k in keywords]
         
-        # 1. Match skills (case insensitive)
         for skill in self.skills_list:
-            # Word boundary check for short skill names (e.g. 'SQL', 'Java')
-            pattern = rf"\b{re.escape(skill.lower())}\b"
-            # Special check for skills with symbols (e.g. NodeJS, Power BI)
-            if skill.lower() in query_lower or re.search(pattern, query_lower):
-                if skill not in extracted_skills:
-                    extracted_skills.append(skill)
-                    
-        # 2. Match domains
-        for domain in self.domains_list:
-            if domain.lower() in query_lower:
-                extracted_domain = domain
-                break
+            if skill.lower() in keywords_lower:
+                extracted_skills.append(skill)
                 
-        # 3. Match certifications
+        for domain in self.domains_list:
+            if domain.lower() in keywords_lower:
+                extracted_domain = domain
+                
         for cert in self.certs_list:
-            if cert.lower() in query_lower:
+            if cert.lower() in keywords_lower:
                 extracted_certs.append(cert)
                 
-        # 4. Match status (bench / available)
-        bench_keywords = ["bench", "available", "immediately", "free", "idle"]
-        if any(keyword in query_lower for keyword in bench_keywords):
+        if "bench" in keywords_lower:
             extracted_status = "BENCH"
             
         return {
@@ -92,48 +210,8 @@ class GraphRAGPipeline:
             "status": extracted_status
         }
 
-    def extract_intent(self, query_text, api_key=None):
-        """Extracts search filters from query using Gemini LLM, with regex fallback."""
-        client = self._get_llm_client(api_key)
-        
-        if not client:
-            print("[*] No LLM client. Using regex intent extraction fallback...")
-            return self.extract_intent_fallback(query_text)
-            
-        prompt = f"""
-        Analyze the following manager request for finding employees in a company.
-        Extract the filtering criteria into a JSON object with the following keys:
-        - "skills": List of skills requested (Must strictly match items from this list: {self.skills_list})
-        - "domain": The industry domain requested (Must strictly match one from: {self.domains_list}, or null if not specified)
-        - "certifications": List of certifications requested (Must strictly match items from: {self.certs_list})
-        - "status": The availability status requested. Return "BENCH" if words like "bench", "available", "immediately", or "free" are used. Return null if not specified.
-        
-        Request: "{query_text}"
-        
-        Return ONLY the valid JSON block.
-        """
-        try:
-            # Using gemini-2.5-flash as the standard fast LLM
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config={'response_mime_type': 'application/json'}
-            )
-            data = json.loads(response.text.strip())
-            return {
-                "skills": data.get("skills", []),
-                "domain": data.get("domain"),
-                "certifications": data.get("certifications", []),
-                "status": data.get("status")
-            }
-        except Exception as e:
-            print(f"[-] Gemini intent extraction failed: {e}. Falling back to regex parser...")
-            return self.extract_intent_fallback(query_text)
-
     def retrieve_candidates(self, query_text, intent, top_k=15):
-        """
-        Retrieves candidates from HugeGraph (Gremlin) and FAISS, then fuses them.
-        """
+        """Retrieves candidates from HugeGraph and FAISS, then fuses them."""
         skills = intent.get("skills", [])
         domain = intent.get("domain")
         certs = intent.get("certifications", [])
@@ -156,8 +234,6 @@ class GraphRAGPipeline:
         
         # 3. Hybrid Fusion
         fused_candidates = {}
-        
-        # Add all vector matches first
         for item in vector_results:
             emp_id = item["emp_id"]
             fused_candidates[emp_id] = {
@@ -167,159 +243,116 @@ class GraphRAGPipeline:
                 "match_type": "Vector Match"
             }
             
-        # Add graph matches that were not caught in the top_k of vector search
         for emp_id in graph_emp_ids:
             if emp_id not in fused_candidates:
                 fused_candidates[emp_id] = {
                     "emp_id": emp_id,
-                    "vector_score": 0.5,  # Base default score
+                    "vector_score": 0.5,
                     "graph_match": True,
                     "match_type": "Graph Match"
                 }
                 
-        # Calculate hybrid boosted score
         for emp_id, cand in fused_candidates.items():
             boost = 0.5 if cand["graph_match"] else 0.0
             cand["hybrid_score"] = cand["vector_score"] + boost
             if cand["graph_match"] and cand["match_type"] == "Vector Match":
                 cand["match_type"] = "Hybrid Match"
                 
-        # Sort candidates by hybrid score descending
         sorted_candidates = sorted(fused_candidates.values(), key=lambda x: x["hybrid_score"], reverse=True)
         return sorted_candidates
 
-    def generate_recommendations_fallback(self, query_text, candidates, intent):
-        """Generates a structured candidate summary locally in Python if Gemini is offline."""
-        output = []
-        output.append(f"### Hybrid RAG Recommendations (Local Fallback Summary)")
-        output.append(f"Query: \"{query_text}\"")
-        output.append(f"Extracted Constraints: Skills: {intent.get('skills')}, Domain: {intent.get('domain')}, Status: {intent.get('status')}")
-        output.append("")
-        output.append("Here is the list of top candidates ranked by similarity and constraint matching:")
-        output.append("")
-        
-        for idx, cand in enumerate(candidates[:5]):
-            emp_id = cand["emp_id"]
-            details = self.queries.get_employee_details(emp_id)
-            if not details:
-                # If HugeGraph is down, fall back to basic details
-                output.append(f"{idx+1}. **Employee {emp_id}** - Score: {cand['hybrid_score']:.3f} [{cand['match_type']}]")
-                continue
-                
-            match_str = f"[{cand['match_type']}] Score: {cand['hybrid_score']:.3f}"
-            output.append(f"{idx+1}. **{details['name']}** ({emp_id}) - {details['designation']} - {match_str}")
-            output.append(f"   * Experience: {details['experience_years']} years | Status: {details['status']} | Location: {details['location']}")
-            output.append(f"   * Domain: {details['domain']}")
-            output.append(f"   * Skills: {', '.join(details['skills'])}")
-            if details['certifications']:
-                output.append(f"   * Certifications: {', '.join(details['certifications'])}")
-            
-            # Analyze match gap
-            req_skills = set(intent.get("skills", []))
-            emp_skills = set(details["skills"])
-            matched = req_skills.intersection(emp_skills)
-            missing = req_skills - emp_skills
-            
-            output.append(f"   * Matching requested skills: {', '.join(matched) if matched else 'None'}")
-            if missing:
-                output.append(f"   * Missing requested skills: {', '.join(missing)}")
-            output.append("")
-            
-        return "\n".join(output)
-
     def run_pipeline(self, query_text, api_key=None, top_n=5):
-        """
-        Runs the full Hybrid GraphRAG pipeline:
-        Intent Extraction -> Hybrid Retrieval -> LLM Ranking & Explanation.
-        """
-        # Step 1: Intent Extraction
-        intent = self.extract_intent(query_text, api_key)
+        """Runs the GraphRAG pipeline using hugegraph-llm operators."""
+        # 1. Initialize LLM
+        llm_client = self._get_llm_client(api_key)
         
-        # Step 2 & 3: Retrieve and Fuse candidates
+        # 2. Step 1: Keyword Extraction (using hugegraph-llm KeywordExtract operator)
+        from hugegraph_llm.operators.llm_op.keyword_extract import KeywordExtract
+        context = {"query": query_text, "llm": llm_client}
+        op_kw = KeywordExtract()
+        context = op_kw.run(context)
+        
+        # 3. Map keywords to structured intent
+        intent = self.extract_intent_from_keywords(context.get("keywords", []))
+        
+        # 4. Retrieve candidates from Graph and Vector Store
         candidates = self.retrieve_candidates(query_text, intent, top_k=15)
         
-        # Get details for the top candidates
+        # Format top candidates to retrieve their full graph properties
         top_candidates = []
-        for cand in candidates[:top_n]:
+        candidates_context_list = []
+        for idx, cand in enumerate(candidates[:top_n]):
             details = self.queries.get_employee_details(cand["emp_id"])
             if details:
-                # Combine graph properties and scores
                 details.update(cand)
                 top_candidates.append(details)
                 
-        # If no candidates found, return empty info
-        if not top_candidates:
-            return {
-                "intent": intent,
-                "candidates": [],
-                "explanation": "No matching candidates found in either the Graph database or Vector store."
-            }
+                c_info = (
+                    f"Candidate {idx+1}: {details['name']} (ID: {details['emp_id']})\n"
+                    f"Designation: {details['designation']}, Experience: {details['experience_years']} years\n"
+                    f"Availability Status: {details['status']}, Location: {details['location']}\n"
+                    f"Domain Specialization: {details['domain']}\n"
+                    f"Skills: {', '.join(details['skills'])}\n"
+                    f"Certifications: {', '.join(details['certifications'])}\n"
+                    f"Match Type: {details['match_type']}, Hybrid Fusion Score: {details['hybrid_score']:.3f}\n"
+                )
+                candidates_context_list.append(c_info)
+                
+        candidates_context_str = "\n---\n".join(candidates_context_list)
+        
+        # 5. Step 2: Query Graph for RAG (using hugegraph-llm GraphRAGQuery operator)
+        from hugegraph_llm.operators.hugegraph_op.graph_rag_query import GraphRAGQuery
+        # GraphRAGQuery automatically initializes PyHugeClient from config.ini
+        op_query = GraphRAGQuery(max_deep=2, max_items=30)
+        try:
+            context = op_query.run(context)
+        except Exception as e:
+            print(f"[-] GraphRAGQuery failed: {e}")
+            context["synthesize_context_body"] = []
+            context["synthesize_context_head"] = ""
+
+        # 6. Build the synthesis context (Combine subgraph facts and retrieved candidate info)
+        graph_paths = context.get("synthesize_context_body", [])
+        combined_context_body = []
+        
+        if graph_paths:
+            combined_context_body.append("--- Traversed Graph Subgraph Paths ---")
+            combined_context_body.extend(graph_paths)
+            combined_context_body.append("")
             
-        # Step 4: Send context to LLM for final generation
-        client = self._get_llm_client(api_key)
-        if not client:
-            print("[*] No LLM client. Using fallback ranking generator...")
-            explanation = self.generate_recommendations_fallback(query_text, candidates, intent)
-            return {
-                "intent": intent,
-                "candidates": top_candidates,
-                "explanation": explanation
-            }
+        if candidates_context_str:
+            combined_context_body.append("--- Retrieved Resource Candidate Details ---")
+            combined_context_body.append(candidates_context_str)
             
-        # Construct LLM prompt
-        candidates_context = []
-        for idx, c in enumerate(top_candidates):
-            c_info = (
-                f"Candidate {idx+1}: {c['name']} (ID: {c['emp_id']})\n"
-                f"Designation: {c['designation']}, Experience: {c['experience_years']} years\n"
-                f"Availability Status: {c['status']}, Location: {c['location']}\n"
-                f"Domain Specialization: {c['domain']}\n"
-                f"Skills: {', '.join(c['skills'])}\n"
-                f"Certifications: {', '.join(c['certifications'])}\n"
-                f"Match Type: {c['match_type']}, Hybrid Fusion Score: {c['hybrid_score']:.3f}\n"
-            )
-            candidates_context.append(c_info)
-            
-        candidates_str = "\n---\n".join(candidates_context)
+        context["synthesize_context_body"] = combined_context_body
+        context["synthesize_context_head"] = "The following is graph knowledge and resource candidate information retrieved from the database:"
+        context["synthesize_context_tail"] = "Please rank these candidates and explain who is the most suitable resource to staff immediately."
         
-        prompt = f"""
-        You are a senior recruitment manager staffing a project.
-        A manager asked this question: "{query_text}"
+        # 7. Step 3: Synthesize Answer (using hugegraph-llm AnswerSynthesize operator)
+        from hugegraph_llm.operators.llm_op.answer_synthesize import AnswerSynthesize
         
-        We extracted the following search intent from their query:
-        - Required Skills: {intent.get('skills')}
-        - Domain: {intent.get('domain')}
-        - Required Status: {intent.get('status')}
+        custom_prompt_template = """
+        You are a senior staffing manager.
+        The manager's request is: "{query_str}"
         
-        Here are the top candidates retrieved by our Hybrid RAG system (combining Graph exact filters and vector semantic similarities):
-        
-        {candidates_str}
+        Context information:
+        {context_str}
         
         Please provide a professional response that:
-        1. Ranks these candidates in order of suitability for this specific request.
+        1. Ranks the candidates in order of suitability for this request.
         2. Explains the reasoning behind the ranking.
-        3. Mentions each candidate's key strengths (e.g. experience, domain specialization, matching skills, certifications).
+        3. Mentions each candidate's key strengths (experience, domain, matching skills, certifications).
         4. Identifies any skill gaps or missing skills relative to the query requirements.
         5. Concludes with a brief recommendation of who to contact or staff immediately.
         
         Write in clear Markdown format with headings.
         """
         
-        try:
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt
-            )
-            return {
-                "intent": intent,
-                "candidates": top_candidates,
-                "explanation": response.text.strip()
-            }
-        except Exception as e:
-            print(f"[-] Gemini generation failed: {e}. Falling back to Python generator...")
-            explanation = self.generate_recommendations_fallback(query_text, candidates, intent)
-            return {
-                "intent": intent,
-                "candidates": top_candidates,
-                "explanation": explanation
-            }
+        op_synth = AnswerSynthesize(prompt_template=custom_prompt_template)
+        explanation = op_synth.run(context)
+        
+        return {
+            "intent": intent,
+            "candidates": top_candidates,
+            "explanation": explanation
+        }

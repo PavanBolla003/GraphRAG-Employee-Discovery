@@ -5,12 +5,17 @@ Usage: python scripts/verify_system.py
 """
 import os, sys, json
 
+# Ensure UTF-8 output encoding on Windows to prevent UnicodeEncodeError
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-PASS = "\033[92m[PASS]\033[0m"
-FAIL = "\033[91m[FAIL]\033[0m"
-SKIP = "\033[93m[SKIP]\033[0m"
-INFO = "\033[94m[INFO]\033[0m"
+PASS = "[PASS]"
+FAIL = "[FAIL]"
+SKIP = "[SKIP]"
+INFO = "[INFO]"
 
 results = []
 
@@ -89,8 +94,8 @@ def check_hugegraph_connection():
     from pyhugegraph.client import PyHugeClient
     client = PyHugeClient("127.0.0.1", "8081", user="admin", pwd="admin", graph="hugegraph")
     result = client.gremlin().exec("g.V().count()")
-
-    return f"connected, vertex count={result[0]}"
+    count = result["data"][0] if isinstance(result, dict) and "data" in result else result[0]
+    return f"connected, vertex count={count}"
 
 check("HugeGraph Server reachable", check_hugegraph_connection)
 
@@ -98,9 +103,15 @@ def check_hugegraph_data():
     from pyhugegraph.client import PyHugeClient
     client = PyHugeClient("127.0.0.1", "8081", user="admin", pwd="admin", graph="hugegraph")
 
-    emp_count  = client.gremlin().exec("g.V().hasLabel('Employee').count()")[0]
-    skill_count = client.gremlin().exec("g.V().hasLabel('Skill').count()")[0]
-    edge_count  = client.gremlin().exec("g.E().count()")[0]
+    res_emp = client.gremlin().exec("g.V().hasLabel('Employee').count()")
+    emp_count = res_emp["data"][0] if isinstance(res_emp, dict) and "data" in res_emp else res_emp[0]
+
+    res_skill = client.gremlin().exec("g.V().hasLabel('Skill').count()")
+    skill_count = res_skill["data"][0] if isinstance(res_skill, dict) and "data" in res_skill else res_skill[0]
+
+    res_edge = client.gremlin().exec("g.E().count()")
+    edge_count = res_edge["data"][0] if isinstance(res_edge, dict) and "data" in res_edge else res_edge[0]
+
     if emp_count < 900:
         raise ValueError(f"Only {emp_count} employees in graph — run ingest_hugegraph.py")
     return f"{emp_count} employees, {skill_count} skills, {edge_count} edges"
@@ -124,12 +135,17 @@ print("\n4. Hybrid GraphRAG Pipeline")
 def check_rag_intent():
     from rag.rag_pipeline import GraphRAGPipeline
     pl = GraphRAGPipeline()
-    intent = pl.extract_intent_fallback("Find bench developers with Python and Machine Learning in Banking")
+    from hugegraph_llm.operators.llm_op.keyword_extract import KeywordExtract
+    client = pl._get_llm_client(api_key=None)
+    context = {"query": "Find bench developers with Python and Machine Learning in Banking", "llm": client}
+    op = KeywordExtract()
+    context = op.run(context)
+    intent = pl.extract_intent_from_keywords(context.get("keywords", []))
     if "Python" not in intent["skills"]:
         raise ValueError(f"Skill extraction failed: {intent}")
     return f"skills={intent['skills']}, domain={intent['domain']}, status={intent['status']}"
 
-check("Intent extraction (fallback)", check_rag_intent)
+check("Intent extraction (hugegraph-llm)", check_rag_intent)
 
 def check_rag_pipeline():
     from rag.rag_pipeline import GraphRAGPipeline
@@ -139,7 +155,7 @@ def check_rag_pipeline():
         raise ValueError("Pipeline returned no candidates")
     return f"{len(result['candidates'])} candidates, explanation length={len(result['explanation'])}"
 
-check("Full GraphRAG pipeline (no LLM)", check_rag_pipeline)
+check("Full GraphRAG pipeline (hugegraph-llm, no LLM)", check_rag_pipeline)
 
 # 5. Summary
 print("\n" + "=" * 55)
@@ -147,8 +163,8 @@ passed = sum(1 for _, ok in results if ok)
 total  = len(results)
 print(f"  Result: {passed}/{total} checks passed")
 if passed == total:
-    print("  ✅ ALL SYSTEMS OPERATIONAL — ready to launch!")
+    print("  ALL SYSTEMS OPERATIONAL — ready to launch!")
     print("     streamlit run app.py")
 else:
-    print("  ⚠️  Some checks failed. Review the output above.")
+    print("  Some checks failed. Review the output above.")
 print("=" * 55 + "\n")
