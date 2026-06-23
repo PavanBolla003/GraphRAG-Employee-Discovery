@@ -1,0 +1,11 @@
+hugegraph-python
+faiss-cpu
+sentence-transformers
+fastapi
+uvicorn
+streamlit
+pyvis
+google-genai
+pandas
+numpy
+faker

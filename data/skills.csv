@@ -1,0 +1,21 @@
+skill_id,name
+S001,Python
+S002,Java
+S003,React
+S004,NodeJS
+S005,AWS
+S006,Azure
+S007,Machine Learning
+S008,Deep Learning
+S009,SQL
+S010,Power BI
+S011,Spark
+S012,Kafka
+S013,Docker
+S014,Kubernetes
+S015,Data Engineering
+S016,MLOps
+S017,GenAI
+S018,TensorFlow
+S019,PyTorch
+S020,Snowflake
