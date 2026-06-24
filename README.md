@@ -152,6 +152,33 @@ python scripts/start_ngrok.py <your_ngrok_authtoken>
 
 Get a free authtoken at: https://ngrok.com
 
+## 🕸️ Graph Visualization with HugeGraph-Hubble
+
+HugeGraph-Hubble is the official visual graph management and analysis platform for HugeGraph. You can use it to visualize and explore the schema and the ingested data.
+
+### 1. Download and Set Up Hubble
+Run the automated multi-threaded setup script to download and extract Hubble, and generate the Windows launcher:
+```bash
+python scripts/setup_hubble.py
+```
+
+### 2. Start Hubble
+Run the generated launcher in the background:
+```powershell
+# Open a new terminal and run
+cd hugegraph-hubble
+.\run_hubble.bat
+```
+
+### 3. Connect to HugeGraph Server
+1. Access the web UI at **http://localhost:8088** in your browser.
+2. In the connection page, click **Create Connection** (or **New Graph**) and fill in the connection details:
+   - **Host**: `localhost`
+   - **Port**: `8081`
+   - **Graph Name**: `hugegraph`
+3. Click **Connect** to access the dashboard.
+4. Go to **Graph Analysis** or **Schema Management** to explore the data dynamically reflecting from the database!
+
 ---
 
 ## 📊 Dataset Summary

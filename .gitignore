@@ -53,3 +53,8 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# HugeGraph Hubble
+hugegraph-hubble/
+test_part*.tar.gz
+
