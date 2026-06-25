@@ -25,9 +25,6 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 # Copy the rest of the application files
 COPY --chown=user:user . .
 
-# Run HugeGraph download and extraction during build so it is cached in the image
-RUN python scripts/setup_hugegraph.py
-
 # Make startup script executable
 RUN chmod +x scripts/run_all.sh
 

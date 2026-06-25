@@ -1,6 +1,10 @@
 #!/bin/sh
 echo "=== Starting GraphRAG Stack ==="
 
+# 0. Setup and download HugeGraph Server
+echo "[*] Downloading and extracting HugeGraph Server..."
+python scripts/setup_hugegraph.py
+
 # 1. Initialize hugegraph-llm library configuration
 echo "[*] Initializing hugegraph-llm config..."
 python scripts/initialize_config.py
