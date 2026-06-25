@@ -1,4 +1,5 @@
 hugegraph-python
+hugegraph-llm
 faiss-cpu
 sentence-transformers
 fastapi
