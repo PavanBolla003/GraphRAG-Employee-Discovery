@@ -5,6 +5,10 @@ echo "=== Starting GraphRAG Stack ==="
 echo "[*] Downloading and extracting HugeGraph Server..."
 python scripts/setup_hugegraph.py
 
+# Install runtime dependencies that require build environment or are heavy
+echo "[*] Installing faiss-cpu and sentence-transformers at runtime..."
+pip install --user faiss-cpu sentence-transformers
+
 # 1. Initialize hugegraph-llm library configuration
 echo "[*] Initializing hugegraph-llm config..."
 python scripts/initialize_config.py
