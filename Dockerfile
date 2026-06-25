@@ -1,9 +1,14 @@
-# Use a Python 3.10 base image (contains build tools like gcc/g++)
+# Use a Python 3.10 base image (contains standard development tools)
 FROM python:3.10
 
-# Install OpenJDK 11 and utility packages as root
+# Install OpenJDK 11, compilers, libraries, and utility packages as root
 RUN apt-get update && apt-get install -y \
     openjdk-11-jre-headless \
+    build-essential \
+    cmake \
+    swig \
+    libopenblas-dev \
+    libomp-dev \
     curl \
     tar \
     procps \
@@ -12,6 +17,9 @@ RUN apt-get update && apt-get install -y \
 
 # Set up working directory
 WORKDIR /app
+
+# Upgrade package installers
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
