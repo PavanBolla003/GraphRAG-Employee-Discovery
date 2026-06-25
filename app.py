@@ -68,6 +68,76 @@ if "gemini_key" not in st.session_state:
 if "pipeline_ready" not in st.session_state:
     st.session_state["pipeline_ready"] = False
 
+# ── Auto-start HugeGraph & FastAPI if offline ───────────────────────────────
+def ensure_hugegraph_is_running():
+    import socket
+    import subprocess
+    import time
+    
+    # 1. Quick port check
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.connect(("127.0.0.1", 8081))
+        s.close()
+        return # Already running!
+    except Exception:
+        pass
+        
+    # 2. Start database and backend services
+    status_placeholder = st.empty()
+    status_placeholder.info("⚙️ **First-time Startup: Initializing and Starting Apache HugeGraph Server...** (This may take ~30-45 seconds)")
+    
+    # Check if download is needed
+    if not os.path.exists("hugegraph-server"):
+        status_placeholder.info("⚙️ **First-time Startup: Downloading Apache HugeGraph Server 1.3.0...**")
+        subprocess.run([sys.executable, "scripts/setup_hugegraph.py"])
+        
+    # Initialize library config
+    subprocess.run([sys.executable, "scripts/initialize_config.py"])
+    
+    # Initialize store (rocksdb)
+    status_placeholder.info("⚙️ **First-time Startup: Initializing RocksDB Storage...**")
+    if os.name == 'nt':
+        # Windows
+        subprocess.run([os.path.abspath("hugegraph-server/run_init.bat")], shell=True)
+        # Start server in background
+        subprocess.Popen([os.path.abspath("hugegraph-server/run_server.bat")], shell=True)
+    else:
+        # Linux/Mac
+        subprocess.run(["/bin/sh", "hugegraph-server/bin/init-store.sh"])
+        # Start server in background
+        subprocess.Popen(["/bin/sh", "hugegraph-server/bin/start-hugegraph.sh"])
+        
+    # Wait for REST API to bind to port 8081
+    status_placeholder.info("⚙️ **First-time Startup: Waiting for HugeGraph REST API to bind on port 8081...**")
+    for _ in range(25):
+        time.sleep(2)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            s.connect(("127.0.0.1", 8081))
+            s.close()
+            break
+        except Exception:
+            pass
+            
+    # Ingest data if not already ingested
+    status_placeholder.info("⚙️ **First-time Startup: Ingesting dataset into HugeGraph & building FAISS index...**")
+    subprocess.run([sys.executable, "ingest_hugegraph.py"])
+    subprocess.run([sys.executable, "create_profiles.py"])
+    subprocess.run([sys.executable, "create_embeddings.py"])
+    
+    # Also start FastAPI backend in background
+    status_placeholder.info("⚙️ **First-time Startup: Launching FastAPI backend server...**")
+    subprocess.Popen([sys.executable, "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"])
+    
+    # Clear startup message
+    status_placeholder.empty()
+
+ensure_hugegraph_is_running()
+
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🕸️ GraphRAG Settings")

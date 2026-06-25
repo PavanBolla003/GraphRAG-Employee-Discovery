@@ -1,4 +1,6 @@
 hugegraph-python
+faiss-cpu
+sentence-transformers
 fastapi
 uvicorn
 streamlit

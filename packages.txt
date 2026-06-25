@@ -1,0 +1,4 @@
+openjdk-11-jre-headless
+curl
+tar
+procps

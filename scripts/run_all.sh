@@ -14,10 +14,6 @@ python scripts/initialize_config.py
 echo "[*] Downloading and extracting HugeGraph Server..."
 python scripts/setup_hugegraph.py
 
-# 3. Install runtime dependencies that require build environment or are heavy
-echo "[*] Installing faiss-cpu and sentence-transformers at runtime..."
-pip install --user faiss-cpu sentence-transformers
-
 # 4. Initialize HugeGraph database store (rocksdb)
 echo "[*] Initializing HugeGraph database store..."
 cd "$APP_DIR/hugegraph-server"
