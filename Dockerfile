@@ -1,14 +1,9 @@
 # Use a Python 3.10 base image (contains standard development tools)
 FROM python:3.10
 
-# Install OpenJDK 11, compilers, libraries, and utility packages as root
+# Install OpenJDK 11 and utility packages as root
 RUN apt-get update && apt-get install -y \
     openjdk-11-jre-headless \
-    build-essential \
-    cmake \
-    swig \
-    libopenblas-dev \
-    libomp-dev \
     curl \
     tar \
     procps \
@@ -18,23 +13,21 @@ RUN apt-get update && apt-get install -y \
 # Set up working directory
 WORKDIR /app
 
-# Upgrade package installers
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
 # Install dependencies globally as root
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create a non-root user for Hugging Face Spaces compatibility
-RUN useradd -m -u 1000 user && chown -R user:user /app
-USER user
-ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH
+# Copy all application files
+COPY . .
 
-# Copy the rest of the application files as user
-COPY --chown=user:user . .
+# Grant full read/write/execute permissions on /app for the runtime non-root user (UID 1000)
+RUN chmod -R 777 /app
+
+# Set Home directory to /app so that pip/cache operations write to a writable path
+ENV HOME=/app \
+    PATH=/app/.local/bin:$PATH
 
 # Make startup script executable
 RUN chmod +x scripts/run_all.sh
