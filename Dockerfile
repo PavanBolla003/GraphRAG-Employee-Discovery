@@ -10,31 +10,28 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up working directory
-WORKDIR /app
+# Set up working directory exactly as in official HF templates
+WORKDIR /code
 
-# Copy requirements first to leverage Docker cache
-COPY requirements.txt .
-
-# Install dependencies globally as root
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy requirements and install
+COPY ./requirements.txt /code/requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 # Copy all application files
 COPY . .
 
-# Grant full read/write/execute permissions on /app for the runtime non-root user (UID 1000)
-RUN chmod -R 777 /app
+# Grant full read/write/execute permissions on /code for HF runtime UID 1000
+RUN chmod -R 777 /code
 
-# Set Home directory to /app so that pip/cache operations write to a writable path
-ENV HOME=/app \
-    PATH=/app/.local/bin:$PATH
+# Set Home directory to /code so that pip/cache operations write to a writable path
+ENV HOME=/code \
+    PATH=/code/.local/bin:$PATH
 
 # Make startup script executable
-RUN chmod +x scripts/run_all.sh
+RUN chmod +x /code/scripts/run_all.sh
 
-# Expose ports for FastAPI (8000) and Streamlit (7860 for Hugging Face)
-EXPOSE 8000
+# Expose Streamlit port (7860 for Hugging Face)
 EXPOSE 7860
 
 # CMD to start all services
-CMD ["/bin/sh", "scripts/run_all.sh"]
+CMD ["/bin/sh", "/code/scripts/run_all.sh"]
